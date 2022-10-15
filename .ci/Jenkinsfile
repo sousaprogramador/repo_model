@@ -1,0 +1,273 @@
+pipeline {
+  options {
+        buildDiscarder(logRotator(numToKeepStr: "10"))
+  }
+
+  environment {
+    REGISTRY = credentials('ecr-registry')
+    REGION = "us-east-1"
+
+    CLUSTER = credentials('k8s-cluster')
+    
+    DOCKER_USER = "AWS"
+
+    YAML_FILE = "k8s-${JOB_NAME}.yaml"
+    YAML_BUCKET = credentials('yaml-s3-bucket')
+    SECRET_BUCKET = credentials('secret-s3-bucket')
+
+    SONAR_TOKEN = credentials('sonar-token')
+    SONAR_URL = credentials('sonar-url')
+    GITHUB_ORG = "lubysoftware"
+
+    // alterar essas variaveis para os comandos de migrations e seeds, quando houver
+    // ex: MIGRATION = "adonis migration:run" ira ligar as migrations
+    // ex: MIGRATION = "false" ira desligar as migrations
+    MIGRATION = "yarn typeorm migration:run"
+    SEED = "false"
+  }
+
+  agent {
+    label 'worker'
+  }
+
+  stages {
+    stage('SonarQube scan') {
+      steps {
+        script {
+         try {
+            sh '''
+              PATH=$PATH:/usr/local/bin/sonar-scanner/bin
+              REPOSITORY_NAME=$(echo ${GIT_URL} | cut -d '/' -f5)
+              PROJECT_KEY=${GITHUB_ORG}_${REPOSITORY_NAME}
+
+              if curl -u ${SONAR_TOKEN}: ${SONAR_URL}/api/projects/search | grep "${PROJECT_KEY}" >/dev/null 2>&1 ; then
+                sonar-scanner \
+                     -Dsonar.projectKey=${PROJECT_KEY} \
+                     -Dsonar.sources=. \
+                     -Dsonar.host.url=${SONAR_URL} \
+                     -Dsonar.login=${SONAR_TOKEN}
+              else
+                curl --include \
+                     --request POST \
+                     -u ${SONAR_TOKEN}: \
+                     "${SONAR_URL}/api/projects/create?project=${PROJECT_KEY}&organization=${GITHUB_ORG}&name=${REPOSITORY_NAME}"
+                sonar-scanner \
+                     -Dsonar.projectKey=${PROJECT_KEY} \
+                     -Dsonar.sources=. \
+                     -Dsonar.host.url=${SONAR_URL} \
+                     -Dsonar.login=${SONAR_TOKEN}
+              fi
+              '''
+          } catch (Exception e) {
+            echo 'Nao foi possivel executar o SonarQube Scan. Exception occurred: ' + e.toString()
+          }
+        }
+      }
+    }
+
+    stage('Check S3 bucket') {
+      steps {
+        script {
+          sh '''
+            if aws s3 ls ${SECRET_BUCKET} | grep ${JOB_NAME} >/dev/null 2>&1 ; then
+                aws s3 sync ${SECRET_BUCKET}/${JOB_NAME} .
+            else
+                echo "Nenhum secret no bucket."
+            fi
+            '''
+        }
+      }
+    }
+
+    // stage('Check package-lock.json and node-modules') {
+    //   steps {
+    //     script {
+    //       sh '''
+    //         if [ -f package-lock.json ]; then
+    //             rm package-lock.json
+    //         else 
+    //             echo "Nenhum package-lock.json no repositorio."
+    //         fi
+
+    //         if [ -d node-modules/ ]; then
+    //             rm -r node-modules/
+    //         else 
+    //             echo "O diretorio node-modules nao existe."
+    //         fi
+    //         '''
+    //     }
+    //   }
+    // }
+
+    stage('Check ECR') {
+      steps {
+        script {
+          sh '''
+            if aws ecr describe-repositories --repository-names ${JOB_NAME} >/dev/null 2>&1 ; then
+                echo "Repositorio ECR ja existe"
+            else
+                echo "Criando novo repositorio..."
+                aws ecr create-repository --repository-name ${JOB_NAME}
+                aws ecr put-lifecycle-policy --repository-name ${JOB_NAME} --lifecycle-policy-text "file://.ci/lifecycle-policy.json"
+            fi
+            '''
+        }
+      }
+    }
+
+    stage('Build') {
+      steps {
+        script {
+          sh '''
+            docker build -t ${JOB_NAME} -f .ci/Dockerfile --no-cache --pull .
+          '''
+        }
+      }
+    }
+
+    // esse stage pode ser alterado para cada projeto
+    // segue um exemplo de um "smoke test" simples
+    // tentar a execução do container e verificar os logs
+    stage('Test') {
+      steps {
+        script {
+          // sh '''
+          // docker run -d --name ${JOB_NAME}
+          // sleep 1m
+          // docker logs ${JOB_NAME}
+          // docker stop ${JOB_NAME}
+          // docker rm ${JOB_NAME}
+          // '''
+
+          sh '''
+            echo "Nenhum teste para ser executado."
+          '''
+        }
+      }
+    }
+
+    stage('Push') {
+      steps {
+        script {
+          sh '''
+            aws ecr get-login-password --region ${REGION} | docker login --username ${DOCKER_USER} --password-stdin ${REGISTRY}
+            docker tag ${JOB_NAME}:latest ${REGISTRY}/${JOB_NAME}:${BUILD_NUMBER}
+            docker push ${REGISTRY}/${JOB_NAME}:${BUILD_NUMBER}
+          '''
+        }
+      }
+    }
+
+    stage('Check cluster') {
+      steps {
+        script {
+          sh '''
+            kubectl cluster-info
+            kubectl get nodes
+          '''
+        }
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+          script {
+            sh '''
+              set +x
+
+              ECR_CRED=$(jq -r '. | @base64' ~/.docker/config.json)
+              PROJECT_NAME=$(echo ${JOB_NAME} | cut -d '-' -f1)
+              DOMAIN_PREFIX=$(echo ${JOB_NAME} | cut -d '-' -f2)
+
+              sed -e "s;%JOB_NAME%;${JOB_NAME};g" \
+                  -e "s;%ECR_CRED%;${ECR_CRED};g" \
+                  -e "s;%REGISTRY%;${REGISTRY};g" \
+                  -e "s;%BUILD_NUMBER%;${BUILD_NUMBER};g" \
+                  -e "s;%PROJECT_NAME%;${PROJECT_NAME};g" \
+                  -e "s;%CLUSTER%;${CLUSTER};g" \
+                  -e "s;%DOMAIN_PREFIX%;${DOMAIN_PREFIX};g" \
+                  .ci/k8s-template.yaml > .ci/${YAML_FILE}
+
+              set -x
+          
+              kubectl apply -f .ci/${YAML_FILE}
+              aws s3 cp .ci/${YAML_FILE} ${YAML_BUCKET}/${YAML_FILE}
+            '''
+        }
+      }
+    }
+
+    // esse stage pode ser utilizado para rodar comandos pos deploy da aplicacao
+    // migrations e seeds em bancos 'locais' (dentro do kubernetes)
+    // devem ser executados nesse stage, e nao dentro da Dockerfile
+    stage('Migrations/seeds') {
+      steps {
+        script {
+          try {
+              sh '''
+                PROJECT_NAME=$(echo ${JOB_NAME} | cut -d '-' -f1)
+
+                if [ "${MIGRATION}" != "false" ] || [ "${SEED}" != "false" ] ; then
+                  if [ "${BUILD_NUMBER}" -eq "1" ] ; then
+                    sleep 2m
+                  else
+                    sleep 1m
+                  fi
+                fi
+      
+                if [ "${MIGRATION}" != "false" ] ; then
+                    kubectl exec -i deployment.apps/${JOB_NAME} -n ${PROJECT_NAME}-ns -- ${MIGRATION}
+                else
+                    echo "Nenhuma migration para ser executada"
+                fi
+
+                if [ "${SEED}" != "false" ] ; then
+                    kubectl exec -i deployment.apps/${JOB_NAME} -n ${PROJECT_NAME}-ns -- ${SEED}
+                else
+                    echo "Nenhuma seed para ser executada"
+                fi
+                '''
+            } catch (Exception e) {
+              echo 'Nao foi possivel executar os comandos no banco de dados. Exception occurred: ' + e.toString()
+            }
+      }
+      }
+    }
+  }
+
+  post {
+    cleanup {
+      script {
+         try {
+            sh 'docker stop $(docker ps -q) > /dev/null 2>&1'
+          } catch (Exception e) {
+            echo 'Exception occurred: ' + e.toString()
+          }
+
+         try {
+            sh 'docker rm $(docker ps -a -q) > /dev/null 2>&1'
+          } catch (Exception e) {
+            echo 'Exception occurred: ' + e.toString()
+          }
+
+         try {
+            sh 'docker rmi -f $(docker images -q)'
+          } catch (Exception e) {
+            echo 'Exception occurred: ' + e.toString()
+          }   
+
+         try {
+            sh 'docker system prune -a -f --volumes'
+          } catch (Exception e) {
+            echo 'Exception occurred: ' + e.toString()
+          }
+
+         try {
+            sh 'rm -rf **'
+          } catch (Exception e) {
+            echo 'Exception occurred: ' + e.toString()
+          }
+      }
+    }
+  }
+}

@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pinguim-nest-deployment
+  namespace: dev
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pinguim-nest
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: pinguim-nest
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "3333"
+    spec:
+      containers:
+        - name: pinguim-nest
+          image: IMAGE_VERSION
+          ports:
+            - containerPort: 3333
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 300m
+              memory: 900Mi
+            limits:
+              cpu: 600m
+              memory: 1500Mi
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node.kubernetes.io/lifecycle
+                operator: In
+                values:
+                  - spot
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - forgot
+                topologyKey: kubernetes.io/hostname
+              weight: 99

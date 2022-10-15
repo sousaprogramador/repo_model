@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pinguim | Confirmação de E-mail</title>
+</head>
+<body style="margin: 0; padding: 0;">
+  <table style="border: 1px solid transparent" align="center" border="1" cellpadding="0" cellspacing="0" width="600">
+    <tr>
+     <td style="text-align: center;">
+      <img style="margin-top: 20px;" src="https://static.pinguim.tur.br/cms/pinguim-logo.png" alt="Logo do Pinguim">
+      <h1 style="color: #000068; font-size: 40px; font-weight: 600;">Olá {{name}}!</h1>
+      <p style="font-size: 32px; font-weight: 600; color: #000068;">Obrigado por se registrar. Aqui está seu token de confirmação:</p>
+      <p style="display: inline-block; background: rgba(196, 196, 196, 0.07); margin: 10px 80px; height: auto; padding: 10px; font-size: 28px;
+      line-height: 32px; font-weight: 600; letter-spacing: 15px;">{{token}}</p>
+    </td>
+    </tr>
+    <tr>
+     <td style="text-align: center; color: #000068; font-weight: 500; font-size: 20px;">
+      <p>Utilize esse código para confirmar seu email no nosso App.</p>
+      {{!-- <p>Ou clique abaixo para validar:</p>
+      <a href="{{url}}" target="_blank">
+        <img style="margin-bottom: 30px;" height="45" src="https://static.pinguim.tur.br/cms/confirm-button.png" alt="Confirm Button" />      
+      </a> --}}
+      <p style="font-size: 20px; font-weight: 500;">Atenciosamente,</p>
+      <p style="font-weight: 600; font-size: 20px;" id="clickBelow">Pinguim App</p>
+     </td>
+    </tr>
+    <tr>
+     <td style="text-align: center; color: #000068;font-size: 18px; margin-top: 3%;opacity: 0.35;">
+      <p>© 2022 PINGUIM. Todos direitos reservados.</p>
+     </td>
+    </tr>
+   </table>
+</body>
+</html>

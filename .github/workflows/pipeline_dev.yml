@@ -1,0 +1,54 @@
+name: publish
+
+on:
+  push:
+    branches:
+      - action_prod
+jobs:
+  build:
+    name: Deploy Production
+    runs-on: ubuntu-20.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: sa-east-1
+
+      - name: "Create env file local"
+        run: |
+          cat <<EOF >> .env
+            ${{ secrets.ENV_PROD }}
+          EOF
+          cp ./eks/prod/Dockerfile .
+
+      - name: "Push Docker image to registry"
+        run: |
+          TAG=$(aws ecr describe-images --repository-name nest-web-prod --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text)
+          TAG_IMAGE=`echo $TAG + 1 | bc`
+          IMAGE="875541103127.dkr.ecr.sa-east-1.amazonaws.com/nest-web-prod:$TAG_IMAGE"
+           
+          aws ecr get-login-password --region sa-east-1 | docker login --username AWS --password-stdin 875541103127.dkr.ecr.sa-east-1.amazonaws.com
+
+          docker build -t docker-image-local .
+          docker tag docker-image-local:latest $IMAGE
+          docker push $IMAGE
+          sed -i -e "s#IMAGE_VERSION#${IMAGE}#" ./eks/prod/0_deployment.yaml
+
+      - name: "Deploy Kubernetes"
+        run: |
+          EKS_PATH=./eks/prod
+
+          sudo snap install kubectl --classic
+          kubectl
+          sleep 5
+          aws eks --region sa-east-1 update-kubeconfig --name tf-cluster-k8s
+
+          kubectl apply -f $EKS_PATH/0_deployment.yaml
+          kubectl apply -f $EKS_PATH/1_service.yaml
+          kubectl apply -f $EKS_PATH/2_hpa.yaml
